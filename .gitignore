@@ -1,0 +1,17 @@
+**/.ipynb_checkpoints
+**/__pycache__
+.idea/
+.vscode/
+.devcontainer/
+
+*.png
+*.zip
+*.mp4
+*.npy
+*.npz
+*.dae
+
+log/
+logs/*
+
+configs_local/
