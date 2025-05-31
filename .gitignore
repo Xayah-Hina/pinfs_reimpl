@@ -4,13 +4,6 @@
 .vscode/
 .devcontainer/
 
-*.png
-*.zip
-*.mp4
-*.npy
-*.npz
-*.dae
-
 log/
 logs/*
 
