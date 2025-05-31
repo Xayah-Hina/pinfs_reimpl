@@ -221,6 +221,50 @@ class PINeuFlowDataset(torch.utils.data.Dataset):
             return poses, focals, extra_params
 
 
+# def collate(batch: list):
+#     images = torch.stack([single['image'] for single in batch])  # [B, H, W, C]
+#     poses = torch.stack([single['pose'] for single in batch])  # [B, 4, 4]
+#     focals = torch.stack([single['focal'] for single in batch])  # [B]
+#     times = torch.stack([single['time'] for single in batch])  # [B, 1]
+#     video_indices = torch.tensor([single['video_index'] for single in batch])  # [B]
+#     frame_indices = torch.tensor([single['frame_index'] for single in batch])  # [B]
+#
+#     return {
+#         'pixels': images,  # [B, N, C]
+#         'poses': poses,  # [B, 4, 4]
+#         'focals': focals,  # [B]
+#         'times': times,  # [B, 1]
+#         'idx_v': video_indices,  # [B]
+#         'idx_f': frame_indices,  # [B]
+#     }
+
+def dataloader_simple(dataset: PINeuFlowDataset):
+    def collate_simple(batch: list):
+        images = torch.stack([single['image'] for single in batch])  # [B, H, W, C]
+        poses = torch.stack([single['pose'] for single in batch])  # [B, 4, 4]
+        focals = torch.stack([single['focal'] for single in batch])  # [B]
+        times = torch.stack([single['time'] for single in batch])  # [B, 1]
+        video_indices = torch.tensor([single['video_index'] for single in batch])  # [B]
+        frame_indices = torch.tensor([single['frame_index'] for single in batch])  # [B]
+
+        return {
+            'images': images,
+            'poses': poses,
+            'focals': focals,
+            'times': times,
+            'video_indices': video_indices,
+            'frame_indices': frame_indices,
+        }
+
+    return torch.utils.data.DataLoader(
+        dataset,
+        batch_size=1,
+        shuffle=dataset.states.dataset_type == 'train',
+        num_workers=0,
+        collate_fn=collate_simple
+    )
+
+
 class PINeuFlowDatasetValidation:
     def __init__(self, dataset: PINeuFlowDataset):
         self.dataset = dataset
