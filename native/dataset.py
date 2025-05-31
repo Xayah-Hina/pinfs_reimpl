@@ -34,6 +34,11 @@ class PINeuFlowDataset(torch.utils.data.Dataset):
         # set dtype and move to device
         self.to(device=device, dtype=torch.float16 if use_fp16 else torch.float32)
 
+        self.num_rays = 1024 if dataset_type == 'train' else -1
+        self.randomize = True if dataset_type == 'train' else False
+        self.precrop = True if dataset_type == 'train' else False
+        self.precrop_frac = 0.5 if dataset_type == 'train' else 1.0
+
     def dataloader_simple(self):
         def collate_simple(batch: list):
             images = torch.stack([single['image'] for single in batch])  # [B, H, W, C]
@@ -58,6 +63,32 @@ class PINeuFlowDataset(torch.utils.data.Dataset):
             shuffle=self.states.dataset_type == 'train',
             num_workers=0,
             collate_fn=collate_simple
+        )
+
+    def dataloader_with_rays(self):
+        def collate_with_rays(batch: list):
+            images = torch.stack([single['image'] for single in batch])  # [B, H, W, C]
+            poses = torch.stack([single['pose'] for single in batch])  # [B, 4, 4]
+            focals = torch.stack([single['focal'] for single in batch])  # [B]
+            times = torch.stack([single['time'] for single in batch])  # [B, 1]
+            video_indices = torch.tensor([single['video_index'] for single in batch])  # [B]
+            frame_indices = torch.tensor([single['frame_index'] for single in batch])  # [B]
+
+            rays_o, rays_d, pixels = PINeuFlowDataset._sample_rays_pixels(images=images, poses=poses, focals=focals, width=self.extra_params.width, height=self.extra_params.height, num_rays=self.num_rays, randomize=self.randomize, device=images.device)  # [B, N, 3]
+
+            return {
+                'rays_o': rays_o,  # [B, N, 3]
+                'rays_d': rays_d,  # [B, N, 3]
+                'pixels': pixels,  # [B, N, 3]
+                'times': times, # [B, 1]
+            }
+
+        return torch.utils.data.DataLoader(
+            self,
+            batch_size=1,
+            shuffle=self.states.dataset_type == 'train',
+            num_workers=0,
+            collate_fn=collate_with_rays
         )
 
     def __getitem__(self, index):
@@ -220,49 +251,76 @@ class PINeuFlowDataset(torch.utils.data.Dataset):
 
             return poses, focals, extra_params
 
+    @staticmethod
+    def _sample_rays_pixels(
+            images: torch.Tensor,  # [N, H, W, 3]
+            poses: torch.Tensor,  # [N, 4, 4]
+            focals: torch.Tensor,  # [N]
+            width: int,
+            height: int,
+            num_rays: int,
+            randomize: bool,
+            precrop: bool,
+            precrop_frac: float,
+            device: torch.device,
+    ):
+        """
+        Sample UV positions and directions, and interpolate corresponding pixel values.
 
-# def collate(batch: list):
-#     images = torch.stack([single['image'] for single in batch])  # [B, H, W, C]
-#     poses = torch.stack([single['pose'] for single in batch])  # [B, 4, 4]
-#     focals = torch.stack([single['focal'] for single in batch])  # [B]
-#     times = torch.stack([single['time'] for single in batch])  # [B, 1]
-#     video_indices = torch.tensor([single['video_index'] for single in batch])  # [B]
-#     frame_indices = torch.tensor([single['frame_index'] for single in batch])  # [B]
-#
-#     return {
-#         'pixels': images,  # [B, N, C]
-#         'poses': poses,  # [B, 4, 4]
-#         'focals': focals,  # [B]
-#         'times': times,  # [B, 1]
-#         'idx_v': video_indices,  # [B]
-#         'idx_f': frame_indices,  # [B]
-#     }
+        Returns:
+        - dirs_normalized: [N, num_rays, 3] or [N, H, W, 3]
+        - sampled_rgb: [N, num_rays, 3] or [N, H, W, 3]
+        """
+        N = focals.shape[0]
 
-def dataloader_simple(dataset: PINeuFlowDataset):
-    def collate_simple(batch: list):
-        images = torch.stack([single['image'] for single in batch])  # [B, H, W, C]
-        poses = torch.stack([single['pose'] for single in batch])  # [B, 4, 4]
-        focals = torch.stack([single['focal'] for single in batch])  # [B]
-        times = torch.stack([single['time'] for single in batch])  # [B, 1]
-        video_indices = torch.tensor([single['video_index'] for single in batch])  # [B]
-        frame_indices = torch.tensor([single['frame_index'] for single in batch])  # [B]
+        if num_rays == -1:
+            u, v = torch.meshgrid(torch.linspace(0, width - 1, width, device=device), torch.linspace(0, height - 1, height, device=device), indexing='xy')  # (H, W), (H, W)
+            u_normalized, v_normalized = (u - width * 0.5) / focals[:, None, None], (v - height * 0.5) / focals[:, None, None]  # (N, H, W), (N, H, W)
+            dirs = torch.stack([u_normalized, -v_normalized, -torch.ones_like(u_normalized)], dim=-1)  # (N, H, W, 3)
+            dirs_normalized = torch.nn.functional.normalize(dirs, dim=-1)  # (N, H, W, 3)
+            rays_d = torch.einsum('nij,nhwj->nhwi', poses[:, :3, :3], dirs_normalized.to(poses.dtype))
+            rays_o = poses[:, None, None, :3, 3].expand_as(rays_d)
+            rays_d = rays_d.reshape(N, -1, 3)
+            rays_o = rays_o.reshape(N, -1, 3)
+            sampled_rgb = images.reshape(N, -1, 3)
+        else:
+            # ----- 1. Sample UV (pixel) coordinates -----
+            if precrop:
+                # Precrop enabled
+                dH = int(height * precrop_frac / 2)
+                dW = int(width * precrop_frac / 2)
+                u = torch.randint(width // 2 - dW, width // 2 + dW, (num_rays,), device=device, dtype=images.dtype)
+                v = torch.randint(height // 2 - dH, height // 2 + dH, (num_rays,), device=device, dtype=images.dtype)
+            else:
+                # Normal full image sampling
+                u = torch.randint(0, width, (num_rays,), device=device, dtype=images.dtype)
+                v = torch.randint(0, height, (num_rays,), device=device, dtype=images.dtype)
 
-        return {
-            'images': images,
-            'poses': poses,
-            'focals': focals,
-            'times': times,
-            'video_indices': video_indices,
-            'frame_indices': frame_indices,
-        }
+            if randomize:
+                u = u + torch.rand_like(u)
+                v = v + torch.rand_like(v)
 
-    return torch.utils.data.DataLoader(
-        dataset,
-        batch_size=1,
-        shuffle=dataset.states.dataset_type == 'train',
-        num_workers=0,
-        collate_fn=collate_simple
-    )
+            # ----- 2. Compute directions -----
+            u_normalized = (u[None, :] - width * 0.5) / focals[:, None]
+            v_normalized = (v[None, :] - height * 0.5) / focals[:, None]
+            dirs = torch.stack([u_normalized, -v_normalized, -torch.ones_like(u_normalized)], dim=-1)
+            dirs_normalized = torch.nn.functional.normalize(dirs, dim=-1)  # [N, num_rays, 3]
+
+            rays_d = torch.einsum('bij,bnj->bni', poses[:, :3, :3], dirs_normalized)  # (B, N, 3)
+            rays_o = poses[:, None, :3, 3].expand_as(rays_d)  # (B, N, 3)
+
+            # ----- 3. Interpolate image pixel values at (u, v) -----
+            grid_u = (u / (width - 1)) * 2 - 1
+            grid_v = (v / (height - 1)) * 2 - 1
+            grid = torch.stack([grid_u, grid_v], dim=-1)
+            grid = grid[None].expand(N, -1, -1)  # [N, num_rays, 2]
+            grid = grid.unsqueeze(2)  # [N, num_rays, 1, 2]
+
+            images_ = images.permute(0, 3, 1, 2)  # [N, 3, H, W]
+            sampled_rgb = torch.nn.functional.grid_sample(images_, grid, align_corners=True)
+            sampled_rgb = sampled_rgb.squeeze(-1).permute(0, 2, 1)  # [N, num_rays, 3]
+
+        return rays_o, rays_d, sampled_rgb  # [N, num_rays, 3]
 
 
 class PINeuFlowDatasetValidation:
