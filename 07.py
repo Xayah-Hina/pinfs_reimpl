@@ -1,4 +1,4 @@
-# new ray generator
+# native ray generator
 import tensorboardX
 import os
 import sys
@@ -14,10 +14,6 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def img2mse(x: torch.Tensor, y: torch.Tensor):
     return torch.mean((x - y) ** 2)
-
-
-def mse2psnr(x: torch.Tensor):
-    return -10. * torch.log10(x)
 
 
 def fade_in_weight(step, start, duration):
@@ -284,48 +280,6 @@ def save_model(path: str, global_step: int,
     torch.save(save_dic, path)
 
 
-def get_rays(K: np.ndarray, c2w: torch.Tensor, xs: torch.Tensor, ys: torch.Tensor) -> Rays:
-    dirs = torch.stack([(xs - K[0, 2]) / K[0, 0], -(ys - K[1, 2]) / K[1, 1], -torch.ones_like(xs)], -1)
-    # Rotate ray directions from camera frame to the world frame
-    rays_d = torch.sum(dirs[..., None, :] * c2w[:3, :3], -1)  # dot product, equals to: [c2w.dot(dir) for dir in dirs]
-    # rays_d = rays_d / torch.norm(rays_d, dim=-1, keepdim=True)  # Normalize directions
-    # Translate camera frame's origin to the world frame. It is the origin of all rays.
-    rays_o = c2w[:3, 3].expand(rays_d.shape)
-    return Rays(rays_o, rays_d)
-
-
-def vgg_sample(vgg_strides: int, num_rays: int, frame: torch.Tensor, bg_color: torch.Tensor, dw: int = None,
-               steps: int = None):
-    if steps is None:
-        strides = vgg_strides + np.random.randint(-1, 2)  # args.vgg_strides(+/-)1 or args.vgg_strides
-    else:
-        strides = vgg_strides + steps % 3 - 1
-    H, W = frame.shape[:2]
-    if dw is None:
-        dw = max(20, min(40, int(np.sqrt(num_rays))))
-    vgg_min_border = 10
-    strides = min(strides, min(H - vgg_min_border, W - vgg_min_border) / dw)
-    strides = int(strides)
-
-    coords = torch.stack(torch.meshgrid(torch.linspace(0, H - 1, H), torch.linspace(0, W - 1, W), indexing='ij'),
-                         dim=-1).to(frame.device)  # (H, W, 2)
-    target_grey = torch.mean(torch.abs(frame - bg_color), dim=-1, keepdim=True)  # (H, W, 1)
-    img_wei = coords.to(torch.float32) * target_grey
-    center_coord = torch.sum(img_wei, dim=(0, 1)) / torch.sum(target_grey)
-    center_coord = center_coord.cpu().numpy()
-    # add random jitter
-    random_R = dw * strides / 2.0
-    # mean and standard deviation: center_coord, random_R/3.0, so that 3sigma < random_R
-    random_x = np.random.normal(center_coord[1], random_R / 3.0) - 0.5 * dw * strides
-    random_y = np.random.normal(center_coord[0], random_R / 3.0) - 0.5 * dw * strides
-
-    offset_w = int(min(max(vgg_min_border, random_x), W - dw * strides - vgg_min_border))
-    offset_h = int(min(max(vgg_min_border, random_y), H - dw * strides - vgg_min_border))
-
-    coords_crop = coords[offset_h:offset_h + dw * strides:strides, offset_w:offset_w + dw * strides:strides, :]
-    return coords_crop, dw
-
-
 def create_models_optis(args, input_ch):
     model = create_model(args.net_model, args, input_ch).to(device)
     grad_vars = list(model.parameters())
@@ -399,7 +353,12 @@ def pinf_train():
         for i_loader, data in tqdm(enumerate(dataloader_native), total=len(dataloader_native)):
             i = global_step
 
-            if global_step <
+            if global_step < args.precrop_iters:
+                dataset_native.precrop = True
+                dataset_native.precrop_frac = args.precrop_frac
+            else:
+                dataset_native.precrop = False
+                dataset_native.precrop_frac = 1.0
 
             model_fading_update(model, prop_model, None, global_step, None)
             tempo_fading = fade_in_weight(global_step, 0, args.tempo_fading)

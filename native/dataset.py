@@ -74,13 +74,22 @@ class PINeuFlowDataset(torch.utils.data.Dataset):
             video_indices = torch.tensor([single['video_index'] for single in batch])  # [B]
             frame_indices = torch.tensor([single['frame_index'] for single in batch])  # [B]
 
-            rays_o, rays_d, pixels = PINeuFlowDataset._sample_rays_pixels(images=images, poses=poses, focals=focals, width=self.extra_params.width, height=self.extra_params.height, num_rays=self.num_rays, randomize=self.randomize, device=images.device)  # [B, N, 3]
+            rays_o, rays_d, pixels = PINeuFlowDataset._sample_rays_pixels(images=images,
+                                                                          poses=poses,
+                                                                          focals=focals,
+                                                                          width=self.extra_params.width,
+                                                                          height=self.extra_params.height,
+                                                                          num_rays=self.num_rays,
+                                                                          randomize=self.randomize,
+                                                                          precrop=self.precrop,
+                                                                          precrop_frac=self.precrop_frac,
+                                                                          device=images.device)  # [B, N, 3]
 
             return {
                 'rays_o': rays_o,  # [B, N, 3]
                 'rays_d': rays_d,  # [B, N, 3]
                 'pixels': pixels,  # [B, N, 3]
-                'times': times, # [B, 1]
+                'times': times,  # [B, 1]
             }
 
         return torch.utils.data.DataLoader(
