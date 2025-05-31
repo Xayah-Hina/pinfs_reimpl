@@ -34,41 +34,41 @@ class PINeuFlowDataset(torch.utils.data.Dataset):
         # set dtype and move to device
         self.to(device=device, dtype=torch.float16 if use_fp16 else torch.float32)
 
-    def dataloader(self):
+    def dataloader_simple(self):
+        def collate_simple(batch: list):
+            images = torch.stack([single['image'] for single in batch])  # [B, H, W, C]
+            poses = torch.stack([single['pose'] for single in batch])  # [B, 4, 4]
+            focals = torch.stack([single['focal'] for single in batch])  # [B]
+            times = torch.stack([single['time'] for single in batch])  # [B, 1]
+            video_indices = torch.tensor([single['video_index'] for single in batch])  # [B]
+            frame_indices = torch.tensor([single['frame_index'] for single in batch])  # [B]
+
+            return {
+                'images': images,
+                'poses': poses,
+                'focals': focals,
+                'times': times,
+                'video_indices': video_indices,
+                'frame_indices': frame_indices,
+            }
+
         return torch.utils.data.DataLoader(
             self,
             batch_size=1,
             shuffle=self.states.dataset_type == 'train',
             num_workers=0,
-            collate_fn=self.collate
+            collate_fn=collate_simple
         )
-
-    def collate(self, batch: list):
-        images = torch.stack([single['image'] for single in batch])  # [B, H, W, C]
-        poses = torch.stack([single['pose'] for single in batch])  # [B, 4, 4]
-        focals = torch.stack([single['focal'] for single in batch])  # [B]
-        times = torch.stack([single['time'] for single in batch])  # [B, 1]
-        video_indices = torch.tensor([single['video_index'] for single in batch])  # [B]
-        frame_indices = torch.tensor([single['frame_index'] for single in batch])  # [B]
-
-        return {
-            'pixels': images,  # [B, N, C]
-            'poses': poses,  # [B, 4, 4]
-            'focals': focals,  # [B]
-            'times': times,  # [B, 1]
-            'idx_v': video_indices,  # [B]
-            'idx_f': frame_indices,  # [B]
-        }
 
     def __getitem__(self, index):
         """
         :param index: frame index
         :return:
         """
-        if self.states.dataset_type == 'train':
-            time_shift = random.uniform(-0.5, 0.5)
-        else:
-            time_shift = 0
+        # if self.states.dataset_type == 'train':
+        #     time_shift = random.uniform(-0.5, 0.5)
+        # else:
+        time_shift = 0
         video_index = random.randint(0, self.poses.shape[0] - 1)
 
         if index == 0 and time_shift <= 0:
