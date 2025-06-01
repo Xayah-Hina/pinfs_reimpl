@@ -1,4 +1,4 @@
-# native ray generator
+# native renderer
 import tensorboardX
 import os
 import sys
@@ -7,7 +7,9 @@ from datetime import datetime
 
 from tqdm import tqdm
 from native import *
-from render import *
+
+import torch
+import numpy as np
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -333,12 +335,6 @@ def pinf_train():
     renderer = PINFRenderer(
         model=model,
         prop_model=prop_model,
-        n_samples=args.N_samples,
-        n_importance=args.N_importance,
-        near=near,
-        far=far,
-        perturb=args.perturb > 0,
-        vel_model=None,
         aabb=aabb,
     )
 
@@ -368,11 +364,23 @@ def pinf_train():
             target_s = data['pixels'][0]
             time_locate = data['times'][0].item()
 
+            # output = renderer.render(
+            #     rays_o, rays_d, chunk=args.chunk,
+            #     ret_raw=True,
+            #     timestep=time_locate,
+            #     background=bkg_color)
             output = renderer.render(
-                rays_o, rays_d, chunk=args.chunk,
-                ret_raw=True,
-                timestep=time_locate,
-                background=bkg_color)
+                rays_o=rays_o,
+                rays_d=rays_d,
+                rays_t=torch.tensor([time_locate], dtype=rays_d.dtype, device=rays_d.device),
+                near=torch.tensor([near], dtype=rays_d.dtype, device=rays_d.device),
+                far=torch.tensor([far], dtype=rays_d.dtype, device=rays_d.device),
+                background=bkg_color,
+                chunk=args.chunk,
+                n_depth_samples=args.N_samples,
+                n_importance=args.N_importance,
+                use_perturb=args.perturb > 0,
+            )
             rgb, _, acc, extras = output.as_tuple()
 
             optimizer.zero_grad()
